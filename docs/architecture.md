@@ -145,5 +145,5 @@ Template variables:
 ## Constraints
 
 - Non-recursive (flat directories only)
-- Alphabetical file ordering only
+- Reverse alphabetical file ordering only
 - All files pre-rendered in memory
