@@ -118,6 +118,30 @@ fn relative_path_key(base_dir: &Path, path: &Path) -> String {
     relative.to_string_lossy().replace('\\', "/")
 }
 
+fn scan_directory_paths(base_dir: &Path) -> Result<Vec<String>> {
+    let mut dirs = Vec::new();
+    scan_directory_paths_recursive(base_dir, base_dir, &mut dirs)?;
+    Ok(dirs)
+}
+
+fn scan_directory_paths_recursive(
+    base_dir: &Path,
+    dir: &Path,
+    dirs: &mut Vec<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            dirs.push(relative_path_key(base_dir, &path));
+            scan_directory_paths_recursive(base_dir, &path, dirs)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn file_href(path: &str) -> String {
     if path.contains('/') {
         format!("/?file={path}")
@@ -163,6 +187,38 @@ impl NavNode {
 fn insert_nav_path(nodes: &mut Vec<NavNode>, path: &str, current_file: &str) {
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     insert_nav_parts(nodes, &parts, path, current_file, "");
+}
+
+fn insert_dir_path(nodes: &mut Vec<NavNode>, path: &str) {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    insert_dir_parts(nodes, &parts);
+}
+
+fn insert_dir_parts(nodes: &mut Vec<NavNode>, parts: &[&str]) {
+    if parts.is_empty() {
+        return;
+    }
+
+    let dir_name = parts[0];
+    let dir_index = nodes.iter().position(|node| match node {
+        NavNode::Dir(dir) => dir.name == dir_name,
+        _ => false,
+    });
+
+    let index = if let Some(index) = dir_index {
+        index
+    } else {
+        nodes.push(NavNode::Dir(NavDir {
+            name: dir_name.to_string(),
+            children: Vec::new(),
+            is_open: false,
+        }));
+        nodes.len() - 1
+    };
+
+    if let NavNode::Dir(dir) = &mut nodes[index] {
+        insert_dir_parts(&mut dir.children, &parts[1..]);
+    }
 }
 
 fn insert_nav_parts(
@@ -302,6 +358,12 @@ impl MarkdownState {
     fn build_navigation_tree(&self, current_file: &str) -> Vec<Value> {
         let mut nodes = Vec::new();
 
+        if let Ok(dirs) = scan_directory_paths(&self.base_dir) {
+            for dir in dirs {
+                insert_dir_path(&mut nodes, &dir);
+            }
+        }
+
         for path in self.tracked_files.keys() {
             insert_nav_path(&mut nodes, path, current_file);
         }
@@ -313,6 +375,31 @@ impl MarkdownState {
         sort_nav_nodes(&mut nodes);
 
         nodes.into_iter().map(|node| node.to_value()).collect()
+    }
+
+    fn rescan_tracked_files(&mut self) -> Result<()> {
+        let file_paths = scan_markdown_files(&self.base_dir)?;
+        let mut tracked_files = HashMap::new();
+
+        for file_path in file_paths {
+            let metadata = fs::metadata(&file_path)?;
+            let last_modified = metadata.modified()?;
+            let content = fs::read_to_string(&file_path)?;
+            let html = Self::markdown_to_html(&content)?;
+            let filename = relative_path_key(&self.base_dir, &file_path);
+
+            tracked_files.insert(
+                filename,
+                TrackedFile {
+                    path: file_path,
+                    last_modified,
+                    html,
+                },
+            );
+        }
+
+        self.tracked_files = tracked_files;
+        Ok(())
     }
 
     fn refresh_file(&mut self, filename: &str) -> Result<()> {
@@ -388,6 +475,21 @@ async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
 }
 
 async fn handle_file_event(event: Event, state: &SharedMarkdownState) {
+    let has_dir_path = event.paths.iter().any(|path| path.is_dir());
+    let is_dir_event = matches!(
+        event.kind,
+        notify::EventKind::Create(notify::event::CreateKind::Folder)
+            | notify::EventKind::Remove(notify::event::RemoveKind::Folder)
+    ) || (matches!(
+        event.kind,
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) && has_dir_path);
+
+    let is_create_or_remove = matches!(
+        event.kind,
+        notify::EventKind::Create(_) | notify::EventKind::Remove(_)
+    );
+
     match event.kind {
         notify::EventKind::Modify(notify::event::ModifyKind::Name(rename_mode)) => {
             use notify::event::RenameMode;
@@ -449,6 +551,19 @@ async fn handle_file_event(event: Event, state: &SharedMarkdownState) {
                 }
             }
         }
+    }
+
+    if is_dir_event {
+        let mut state_guard = state.lock().await;
+        if state_guard.is_directory_mode && state_guard.rescan_tracked_files().is_ok() {
+            let _ = state_guard.change_tx.send(ServerMessage::Reload);
+        }
+        return;
+    }
+
+    if is_create_or_remove {
+        let state_guard = state.lock().await;
+        let _ = state_guard.change_tx.send(ServerMessage::Reload);
     }
 }
 

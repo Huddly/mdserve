@@ -34,6 +34,7 @@ mdserve ./docs/
 - Watches specified directory
 - Tracks all `.md` and `.markdown` files (recursive scan)
 - Shows navigation sidebar with a collapsible tree
+- Shows empty folders in the tree
 
 ## Architecture
 
@@ -92,15 +93,15 @@ is_directory_mode = true
 ### Live Reload
 
 Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory (non-recursive; subdirectories are not watched):
-- Create/modify: Refresh file, add if new (directory mode only)
-- Delete: Remove from tracking
-- Rename: Remove old, add new
-- All changes trigger WebSocket reload broadcast
+- Create: Folder create triggers rescan + reload; markdown adds refresh state
+- Modify: Refresh markdown; reload on image changes
+- Delete: Folder delete triggers rescan + reload; file deletes still trigger reload
+- Rename: Refresh new markdown path when detected
 
 File changes flow:
 1. File system event detected by `notify`
 2. Markdown re-rendered to HTML
-3. State updated (refresh/add/remove tracked file)
+3. State updated (refresh/add tracked file as needed)
 4. `ServerMessage::Reload` broadcast via WebSocket channel
 5. All connected clients receive reload message
 6. Clients execute `window.location.reload()`

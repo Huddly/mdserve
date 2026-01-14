@@ -90,7 +90,8 @@ mdserve README.md --hostname 0.0.0.0 --port 8080
 **Directory Mode**: When you pass a directory path, mdserve automatically:
 - Scans `.md` and `.markdown` files recursively (includes subfolders)
 - Displays a collapsible tree sidebar for easy navigation
-- Watches for new markdown files added to the top-level directory
+- Shows empty folders in the sidebar
+- Reloads when files are added or removed in the top-level directory
 - Only monitors the immediate directory (non-recursive)
 
 
