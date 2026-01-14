@@ -69,7 +69,7 @@ pub fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
-    md_files.sort();
+    md_files.sort_by(|a, b| b.cmp(a));
 
     Ok(md_files)
 }
@@ -131,7 +131,7 @@ impl MarkdownState {
 
     fn get_sorted_filenames(&self) -> Vec<String> {
         let mut filenames: Vec<_> = self.tracked_files.keys().cloned().collect();
-        filenames.sort();
+        filenames.sort_by(|a, b| b.cmp(a));
         filenames
     }
 

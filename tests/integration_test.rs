@@ -619,14 +619,14 @@ async fn test_directory_mode_file_order() {
         .expect("test2.markdown not found");
     let test3_pos = body.find("test3.md").expect("test3.md not found");
 
-    // Verify alphabetical order
+    // Verify reverse alphabetical order
     assert!(
-        test1_pos < test2_pos,
-        "test1.md should appear before test2.markdown"
+        test3_pos < test2_pos,
+        "test3.md should appear before test2.markdown"
     );
     assert!(
-        test2_pos < test3_pos,
-        "test2.markdown should appear before test3.md"
+        test2_pos < test1_pos,
+        "test2.markdown should appear before test1.md"
     );
 }
 
