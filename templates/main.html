@@ -204,6 +204,11 @@
 
         .file-list summary {
             cursor: pointer;
+            font-weight: 600;
+            background: var(--border-color-light);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .file-list a:hover,
@@ -222,6 +227,16 @@
 
         .file-list details {
             padding-left: 6px;
+        }
+
+        .file-list details > summary::before {
+            content: ">";
+            font-size: 12px;
+            color: var(--blockquote-color);
+        }
+
+        .file-list details[open] > summary::before {
+            content: "v";
         }
 
         .file-list details[open] > summary {
