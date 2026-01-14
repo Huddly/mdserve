@@ -106,6 +106,11 @@ File changes flow:
 5. All connected clients receive reload message
 6. Clients execute `window.location.reload()`
 
+Page reload flow:
+1. Browser reloads `GET /`
+2. Server rescans markdown files (directory mode only)
+3. Navigation tree and content render from refreshed state
+
 ### Routing
 
 Single unified router handles both modes:

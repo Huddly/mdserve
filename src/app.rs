@@ -680,6 +680,10 @@ async fn serve_html_root(
 ) -> impl IntoResponse {
     let mut state = state.lock().await;
 
+    if state.is_directory_mode {
+        let _ = state.rescan_tracked_files();
+    }
+
     let filename = if let Some(requested) = query.file {
         if state.tracked_files.contains_key(&requested) {
             requested
