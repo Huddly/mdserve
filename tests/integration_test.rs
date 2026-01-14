@@ -631,6 +631,29 @@ async fn test_directory_mode_file_order() {
 }
 
 #[tokio::test]
+async fn test_directory_mode_nested_file_via_query() {
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+
+    fs::write(temp_dir.path().join("root.md"), "# Root\n\nRoot file").expect("Failed to write");
+
+    let sub_dir = temp_dir.path().join("subdir");
+    fs::create_dir(&sub_dir).expect("Failed to create subdir");
+    fs::write(sub_dir.join("nested.md"), "# Nested\n\nNested content")
+        .expect("Failed to write nested.md");
+
+    let base_dir = temp_dir.path().to_path_buf();
+    let tracked_files = scan_markdown_files(&base_dir).expect("Failed to scan markdown files");
+    let router = new_router(base_dir, tracked_files, true).expect("Failed to create router");
+    let server = TestServer::new(router).expect("Failed to create test server");
+
+    let response = server.get("/?file=subdir/nested.md").await;
+    assert_eq!(response.status_code(), 200);
+    let body = response.text();
+    assert!(body.contains("<h1>Nested</h1>"));
+    assert!(body.contains("Nested content"));
+}
+
+#[tokio::test]
 async fn test_directory_mode_websocket_file_modification() {
     let (server, temp_dir) = create_directory_server_with_http().await;
 

@@ -32,8 +32,8 @@ mdserve README.md
 mdserve ./docs/
 ```
 - Watches specified directory
-- Tracks all `.md` and `.markdown` files
-- Shows navigation sidebar
+- Tracks all `.md` and `.markdown` files (recursive scan)
+- Shows navigation sidebar with a collapsible tree
 
 ## Architecture
 
@@ -41,7 +41,7 @@ mdserve ./docs/
 
 Central state stores:
 - Base directory path
-- HashMap of tracked files (filename → metadata + pre-rendered HTML)
+- HashMap of tracked files (relative path → metadata + pre-rendered HTML)
 - Directory mode flag (determines UI)
 - WebSocket broadcast channel
 
@@ -91,7 +91,7 @@ is_directory_mode = true
 
 ### Live Reload
 
-Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory (non-recursive):
+Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory (non-recursive; subdirectories are not watched):
 - Create/modify: Refresh file, add if new (directory mode only)
 - Delete: Remove from tracking
 - Rename: Remove old, add new
@@ -108,8 +108,9 @@ File changes flow:
 ### Routing
 
 Single unified router handles both modes:
-- `GET /` → First file alphabetically
-- `GET /:filename.md` → Specific markdown file
+- `GET /` → First file in navigation order
+- `GET /?file=subdir/name.md` → Nested markdown file
+- `GET /:filename.md` → Specific top-level markdown file
 - `GET /:filename.<ext>` → Images from base directory
 - `GET /ws` → WebSocket connection
 - `GET /mermaid.min.js` → Bundled Mermaid library
@@ -129,8 +130,8 @@ Template variables:
 - `content`: Pre-rendered markdown HTML
 - `mermaid_enabled`: Boolean flag, conditionally includes Mermaid.js when diagrams detected
 - `show_navigation`: Controls sidebar visibility
-- `files`: List of tracked files (directory mode)
-- `current_file`: Active file name (directory mode)
+- `files`: Tree of tracked files (directory mode)
+- `current_file`: Active file path (directory mode)
 
 ## Design Decisions
 
@@ -138,12 +139,12 @@ Template variables:
 
 **Pre-rendered caching**: All tracked files rendered to HTML in memory on startup and file change. Serving always from memory, never from disk.
 
-**Non-recursive watching**: Only immediate directory, no subdirectories. Simplifies security and state management.
+**Non-recursive watching**: Only immediate directory, no subdirectories. Sidebar uses a recursive scan for structure.
 
 **Server-side logic**: Most logic lives server-side (markdown rendering, file tracking, navigation, active file highlighting, live reload triggering). Client-side JavaScript minimal (theme management, reload execution).
 
 ## Constraints
 
-- Non-recursive (flat directories only)
-- Reverse alphabetical file ordering only
+- Non-recursive watching (top-level only)
+- Reverse alphabetical ordering per directory
 - All files pre-rendered in memory

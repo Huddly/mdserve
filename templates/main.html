@@ -181,11 +181,18 @@
             margin: 0;
         }
 
-        .file-list li {
-            margin-bottom: 4px;
+        .file-list ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
         }
 
-        .file-list a {
+        .file-list li {
+            margin-bottom: 2px;
+        }
+
+        .file-list a,
+        .file-list summary {
             display: block;
             padding: 8px 12px;
             color: var(--text-color);
@@ -195,8 +202,14 @@
             font-size: 14px;
         }
 
+        .file-list summary {
+            cursor: pointer;
+        }
+
         .file-list a:hover,
-        .file-list a:focus-visible {
+        .file-list a:focus-visible,
+        .file-list summary:hover,
+        .file-list summary:focus-visible {
             background: var(--border-color-light);
             outline: none;
         }
@@ -205,6 +218,20 @@
             background: var(--border-color-light);
             color: var(--text-color);
             font-weight: 600;
+        }
+
+        .file-list details {
+            padding-left: 6px;
+        }
+
+        .file-list details[open] > summary {
+            font-weight: 600;
+        }
+
+        .file-list details > ul {
+            margin-left: 12px;
+            padding-left: 12px;
+            border-left: 1px solid var(--border-color-light);
         }
 
         /* Main Content Area */
@@ -660,6 +687,24 @@
     </script>
 </head>
 <body>
+{% macro render_node(node) %}
+    {% if node.kind == "dir" %}
+    <li class="file-node dir">
+        <details class="dir-node"{% if node.is_open %} open{% endif %}>
+            <summary class="dir-label">{{ node.name }}</summary>
+            <ul class="file-list">
+                {% for child in node.children %}
+                {{ render_node(child) }}
+                {% endfor %}
+            </ul>
+        </details>
+    </li>
+    {% else %}
+    <li class="file-node file">
+        <a href="{{ node.url }}"{% if node.is_active %} class="active"{% endif %}>{{ node.name }}</a>
+    </li>
+    {% endif %}
+{% endmacro %}
 {% if show_navigation %}
 <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar">
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -671,12 +716,8 @@
     <div class="sidebar-header"></div>
     <div class="sidebar-content">
         <ul class="file-list">
-            {% for file in files %}
-            <li>
-                <a href="/{{ file.name }}"{% if file.name == current_file %} class="active"{% endif %}>
-                    {{ file.name }}
-                </a>
-            </li>
+            {% for node in files %}
+            {{ render_node(node) }}
             {% endfor %}
         </ul>
     </div>

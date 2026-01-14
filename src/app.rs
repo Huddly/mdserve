@@ -2,7 +2,7 @@ use anyhow::Result;
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Path as AxumPath, State, WebSocketUpgrade,
+        Path as AxumPath, Query, State, WebSocketUpgrade,
     },
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse},
@@ -14,6 +14,7 @@ use minijinja::{context, value::Value, Environment};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     fs,
     net::Ipv6Addr,
     path::{Path, PathBuf},
@@ -57,21 +58,52 @@ pub enum ServerMessage {
 
 use std::collections::HashMap;
 
+#[derive(Deserialize)]
+struct FileQuery {
+    file: Option<String>,
+}
+
+struct NavDir {
+    name: String,
+    children: Vec<NavNode>,
+    is_open: bool,
+}
+
+struct NavFile {
+    name: String,
+    path: String,
+    url: String,
+    is_active: bool,
+}
+
+enum NavNode {
+    Dir(NavDir),
+    File(NavFile),
+}
+
 pub fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut md_files = Vec::new();
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() && is_markdown_file(&path) {
-            md_files.push(path);
-        }
-    }
+    scan_markdown_files_recursive(dir, &mut md_files)?;
 
     md_files.sort_by(|a, b| b.cmp(a));
 
     Ok(md_files)
+}
+
+fn scan_markdown_files_recursive(dir: &Path, md_files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            scan_markdown_files_recursive(&path, md_files)?;
+        } else if path.is_file() && is_markdown_file(&path) {
+            md_files.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn is_markdown_file(path: &Path) -> bool {
@@ -79,6 +111,138 @@ fn is_markdown_file(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)
+}
+
+fn relative_path_key(base_dir: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(base_dir).unwrap_or(path);
+    relative.to_string_lossy().replace('\\', "/")
+}
+
+fn file_href(path: &str) -> String {
+    if path.contains('/') {
+        format!("/?file={path}")
+    } else {
+        format!("/{path}")
+    }
+}
+
+impl NavNode {
+    fn name(&self) -> &str {
+        match self {
+            NavNode::Dir(dir) => &dir.name,
+            NavNode::File(file) => &file.name,
+        }
+    }
+
+    fn is_dir(&self) -> bool {
+        matches!(self, NavNode::Dir(_))
+    }
+
+    fn to_value(&self) -> Value {
+        let mut map = HashMap::new();
+        match self {
+            NavNode::Dir(dir) => {
+                map.insert("kind".to_string(), Value::from("dir"));
+                map.insert("name".to_string(), Value::from(dir.name.clone()));
+                map.insert("is_open".to_string(), Value::from(dir.is_open));
+                let children: Value = dir.children.iter().map(|child| child.to_value()).collect();
+                map.insert("children".to_string(), children);
+            }
+            NavNode::File(file) => {
+                map.insert("kind".to_string(), Value::from("file"));
+                map.insert("name".to_string(), Value::from(file.name.clone()));
+                map.insert("path".to_string(), Value::from(file.path.clone()));
+                map.insert("url".to_string(), Value::from(file.url.clone()));
+                map.insert("is_active".to_string(), Value::from(file.is_active));
+            }
+        }
+        Value::from_object(map)
+    }
+}
+
+fn insert_nav_path(nodes: &mut Vec<NavNode>, path: &str, current_file: &str) {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    insert_nav_parts(nodes, &parts, path, current_file, "");
+}
+
+fn insert_nav_parts(
+    nodes: &mut Vec<NavNode>,
+    parts: &[&str],
+    full_path: &str,
+    current_file: &str,
+    prefix: &str,
+) {
+    if parts.is_empty() {
+        return;
+    }
+
+    if parts.len() == 1 {
+        let name = parts[0].to_string();
+        nodes.push(NavNode::File(NavFile {
+            name,
+            path: full_path.to_string(),
+            url: file_href(full_path),
+            is_active: full_path == current_file,
+        }));
+        return;
+    }
+
+    let dir_name = parts[0];
+    let dir_path = if prefix.is_empty() {
+        dir_name.to_string()
+    } else {
+        format!("{prefix}/{dir_name}")
+    };
+
+    let dir_index = nodes.iter().position(|node| match node {
+        NavNode::Dir(dir) => dir.name == dir_name,
+        _ => false,
+    });
+
+    let index = if let Some(index) = dir_index {
+        index
+    } else {
+        nodes.push(NavNode::Dir(NavDir {
+            name: dir_name.to_string(),
+            children: Vec::new(),
+            is_open: false,
+        }));
+        nodes.len() - 1
+    };
+
+    if let NavNode::Dir(dir) = &mut nodes[index] {
+        insert_nav_parts(&mut dir.children, &parts[1..], full_path, current_file, &dir_path);
+    }
+}
+
+fn mark_nav_open(node: &mut NavNode) -> bool {
+    match node {
+        NavNode::File(file) => file.is_active,
+        NavNode::Dir(dir) => {
+            let mut has_active = false;
+            for child in &mut dir.children {
+                if mark_nav_open(child) {
+                    has_active = true;
+                }
+            }
+            dir.is_open = has_active;
+            has_active
+        }
+    }
+}
+
+fn sort_nav_nodes(nodes: &mut Vec<NavNode>) {
+    for node in nodes.iter_mut() {
+        if let NavNode::Dir(dir) = node {
+            sort_nav_nodes(&mut dir.children);
+        }
+    }
+
+    nodes.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => b.name().cmp(a.name()),
+    });
 }
 
 struct TrackedFile {
@@ -105,7 +269,7 @@ impl MarkdownState {
             let content = fs::read_to_string(&file_path)?;
             let html = Self::markdown_to_html(&content)?;
 
-            let filename = file_path.file_name().unwrap().to_string_lossy().to_string();
+            let filename = relative_path_key(&base_dir, &file_path);
 
             tracked_files.insert(
                 filename,
@@ -135,6 +299,22 @@ impl MarkdownState {
         filenames
     }
 
+    fn build_navigation_tree(&self, current_file: &str) -> Vec<Value> {
+        let mut nodes = Vec::new();
+
+        for path in self.tracked_files.keys() {
+            insert_nav_path(&mut nodes, path, current_file);
+        }
+
+        for node in nodes.iter_mut() {
+            mark_nav_open(node);
+        }
+
+        sort_nav_nodes(&mut nodes);
+
+        nodes.into_iter().map(|node| node.to_value()).collect()
+    }
+
     fn refresh_file(&mut self, filename: &str) -> Result<()> {
         if let Some(tracked) = self.tracked_files.get_mut(filename) {
             let metadata = fs::metadata(&tracked.path)?;
@@ -151,7 +331,7 @@ impl MarkdownState {
     }
 
     fn add_tracked_file(&mut self, file_path: PathBuf) -> Result<()> {
-        let filename = file_path.file_name().unwrap().to_string_lossy().to_string();
+        let filename = relative_path_key(&self.base_dir, &file_path);
 
         if self.tracked_files.contains_key(&filename) {
             return Ok(());
@@ -191,12 +371,8 @@ async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
         return;
     }
 
-    let filename = path.file_name().and_then(|n| n.to_str()).map(String::from);
-    let Some(filename) = filename else {
-        return;
-    };
-
     let mut state_guard = state.lock().await;
+    let filename = relative_path_key(&state_guard.base_dir, path);
 
     // If file is already tracked, refresh its content
     if state_guard.tracked_files.contains_key(&filename) {
@@ -379,16 +555,30 @@ fn format_host(hostname: &str, port: u16) -> String {
     }
 }
 
-async fn serve_html_root(State(state): State<SharedMarkdownState>) -> impl IntoResponse {
+async fn serve_html_root(
+    State(state): State<SharedMarkdownState>,
+    Query(query): Query<FileQuery>,
+) -> impl IntoResponse {
     let mut state = state.lock().await;
 
-    let filename = match state.get_sorted_filenames().into_iter().next() {
-        Some(name) => name,
-        None => {
+    let filename = if let Some(requested) = query.file {
+        if state.tracked_files.contains_key(&requested) {
+            requested
+        } else {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("No files available to serve".to_string()),
+                StatusCode::NOT_FOUND,
+                Html("File not found".to_string()),
             );
+        }
+    } else {
+        match state.get_sorted_filenames().into_iter().next() {
+            Some(name) => name,
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("No files available to serve".to_string()),
+                );
+            }
         }
     };
 
@@ -440,17 +630,7 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
     };
 
     let rendered = if state.show_navigation() {
-        let filenames = state.get_sorted_filenames();
-        let files: Vec<Value> = filenames
-            .iter()
-            .map(|name| {
-                Value::from_object({
-                    let mut map = std::collections::HashMap::new();
-                    map.insert("name".to_string(), Value::from(name.clone()));
-                    map
-                })
-            })
-            .collect();
+        let files = state.build_navigation_tree(current_file);
 
         match template.render(context! {
             content => content,
@@ -739,11 +919,11 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap())
             .collect();
-        assert_eq!(filenames, vec!["test1.md", "test2.markdown", "test3.md"]);
+        assert_eq!(filenames, vec!["test3.md", "test2.markdown", "test1.md"]);
     }
 
     #[test]
-    fn test_scan_markdown_files_ignores_subdirectories() {
+    fn test_scan_markdown_files_includes_subdirectories() {
         let temp_dir = tempdir().expect("Failed to create temp dir");
 
         fs::write(temp_dir.path().join("root.md"), "# Root").expect("Failed to write");
@@ -754,8 +934,19 @@ mod tests {
 
         let result = scan_markdown_files(temp_dir.path()).expect("Failed to scan");
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_name().unwrap().to_str().unwrap(), "root.md");
+        assert_eq!(result.len(), 2);
+
+        let relative_paths: Vec<_> = result
+            .iter()
+            .map(|p| {
+                p.strip_prefix(temp_dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        assert_eq!(relative_paths, vec!["subdir/nested.md", "root.md"]);
     }
 
     #[test]
