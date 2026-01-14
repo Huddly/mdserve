@@ -19,7 +19,7 @@ use std::{
     net::Ipv6Addr,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     net::TcpListener,
@@ -554,10 +554,14 @@ async fn handle_file_event(event: Event, state: &SharedMarkdownState) {
     }
 
     if is_dir_event {
-        let mut state_guard = state.lock().await;
-        if state_guard.is_directory_mode && state_guard.rescan_tracked_files().is_ok() {
-            let _ = state_guard.change_tx.send(ServerMessage::Reload);
-        }
+        let state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            let mut state_guard = state.lock().await;
+            if state_guard.is_directory_mode && state_guard.rescan_tracked_files().is_ok() {
+                let _ = state_guard.change_tx.send(ServerMessage::Reload);
+            }
+        });
         return;
     }
 
