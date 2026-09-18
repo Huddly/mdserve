@@ -125,6 +125,12 @@ The `:filename` pattern rejects paths with `/`, preventing directory traversal.
 
 ### Rendering
 
+Markdown is converted to HTML once per file change, then post-processed so every
+heading carries a GitHub-style slug `id` and a trailing `§` permalink. Slugs are
+deduplicated per file, and an `id` already present on a raw-HTML heading is kept
+and linked to rather than replaced. This makes sections addressable as `#anchor`
+URLs.
+
 Uses [MiniJinja](https://github.com/mitsuhiko/minijinja) (Jinja2 template syntax) with templates embedded at compile time via [minijinja_embed](https://github.com/mitsuhiko/minijinja/tree/main/minijinja-embed).
 
 Conditional template rendering:

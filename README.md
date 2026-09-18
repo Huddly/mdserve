@@ -11,6 +11,7 @@ Just run `mdserve file.md` and start writing. One statically-compiled executable
 - ⚡ **Instant Live Reload** - Real-time updates via WebSocket when markdown file changes
 - 📁 **Directory Mode** - Serve all markdown files in a directory with a navigation sidebar
 - 🎨 **Multiple Themes** - Built-in theme selector with 5 themes including Catppuccin variants
+- 🔗 **Section Anchors** - Every heading gets an `id` and a `§` permalink, so `#anchor` URLs can be shared
 - 📝 **GitHub Flavored Markdown** - Full GFM support including tables, strikethrough, code blocks, and task lists
 - 📊 **Mermaid Diagrams** - Automatic rendering of flowcharts, sequence diagrams, class diagrams, and more
 - 🚀 **Fast** - Built with Rust and Axum for excellent performance and low memory usage

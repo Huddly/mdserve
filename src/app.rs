@@ -56,7 +56,7 @@ pub enum ServerMessage {
     Pong,
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize)]
 struct FileQuery {
@@ -447,8 +447,204 @@ impl MarkdownState {
         let html_body = markdown::to_html_with_options(content, &options)
             .unwrap_or_else(|_| "Error parsing markdown".to_string());
 
-        Ok(html_body)
+        Ok(add_heading_anchors(&html_body))
     }
+}
+
+/// Gives every heading an `id` and a trailing `§` link to itself, so that
+/// sections can be shared as `#anchor` URLs.
+///
+/// Slugs follow the GitHub convention: lowercased text, spaces collapsed into
+/// hyphens, other punctuation dropped. Repeated slugs get a `-1`, `-2`, ...
+/// suffix. Headings that already carry an `id` (raw HTML in the markdown) keep
+/// it and are left alone.
+fn add_heading_anchors(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut cursor = 0;
+
+    while let Some(heading) = find_heading(html, cursor) {
+        let Heading {
+            tag_start,
+            open_tag_end,
+            inner_end,
+            level,
+        } = heading;
+
+        out.push_str(&html[cursor..tag_start]);
+        cursor = inner_end;
+
+        let open_tag = &html[tag_start..=open_tag_end];
+        let inner = &html[open_tag_end + 1..inner_end];
+
+        let slug = match existing_id(open_tag) {
+            // An author-provided id wins, and is kept out of later slugs.
+            Some(existing) if !existing.is_empty() => {
+                taken.insert(existing.to_string());
+                out.push_str(&html[tag_start..inner_end]);
+                existing.to_string()
+            }
+            _ => {
+                let slug = heading_slug(&strip_html_tags(inner));
+                if slug.is_empty() {
+                    out.push_str(&html[tag_start..inner_end]);
+                    continue;
+                }
+                let slug = unique_slug(&slug, &mut taken);
+
+                out.push_str(&format!("<h{level} id=\"{slug}\""));
+                // Keep the original tag's other attributes and its closing `>`.
+                out.push_str(&html[tag_start + 3..=open_tag_end]);
+                out.push_str(inner);
+                slug
+            }
+        };
+
+        out.push_str(&format!(
+            "<a class=\"heading-anchor\" href=\"#{slug}\" \
+             aria-label=\"Link to this section\">\u{a7}</a>"
+        ));
+    }
+
+    out.push_str(&html[cursor..]);
+    out
+}
+
+struct Heading {
+    /// Byte index of the `<` starting the opening tag.
+    tag_start: usize,
+    /// Byte index of the `>` ending the opening tag.
+    open_tag_end: usize,
+    /// Byte index of the `<` starting the closing tag.
+    inner_end: usize,
+    level: u8,
+}
+
+/// Finds the next complete `<h1>`..`<h6>` element at or after `from`.
+fn find_heading(html: &str, from: usize) -> Option<Heading> {
+    let bytes = html.as_bytes();
+    let mut search = from;
+
+    while let Some(offset) = html[search..].find("<h") {
+        let tag_start = search + offset;
+        let level_index = tag_start + 2;
+        search = level_index;
+
+        let level = match bytes.get(level_index) {
+            Some(digit @ b'1'..=b'6') => digit - b'0',
+            _ => continue,
+        };
+
+        let after_level = level_index + 1;
+        let open_tag_end = match bytes.get(after_level) {
+            Some(b'>') => after_level,
+            Some(byte) if byte.is_ascii_whitespace() => match html[after_level..].find('>') {
+                Some(offset) => after_level + offset,
+                None => continue,
+            },
+            _ => continue,
+        };
+
+        let close_tag = format!("</h{level}>");
+        let Some(offset) = html[open_tag_end + 1..].find(&close_tag) else {
+            continue;
+        };
+
+        return Some(Heading {
+            tag_start,
+            open_tag_end,
+            inner_end: open_tag_end + 1 + offset,
+            level,
+        });
+    }
+
+    None
+}
+
+/// Returns the value of an `id` attribute already present on an opening tag.
+fn existing_id(open_tag: &str) -> Option<&str> {
+    let mut rest = open_tag;
+
+    while let Some(offset) = rest.find("id") {
+        let before_is_boundary = rest[..offset]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_whitespace());
+        rest = &rest[offset + 2..];
+        if !before_is_boundary {
+            continue;
+        }
+
+        let value = rest.trim_start();
+        let Some(value) = value.strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim_start();
+        let value = match value.chars().next() {
+            Some(quote @ ('"' | '\'')) => value[1..].split(quote).next().unwrap_or(""),
+            _ => value.split([' ', '\t', '\n', '>']).next().unwrap_or(""),
+        };
+
+        return Some(value);
+    }
+
+    None
+}
+
+/// Drops HTML tags and resolves the entities markdown rendering introduces, so
+/// that only the heading's visible text feeds the slug.
+fn strip_html_tags(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
+/// Turns heading text into a GitHub-style slug.
+fn heading_slug(text: &str) -> String {
+    let mut slug = String::with_capacity(text.len());
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            slug.extend(ch.to_lowercase());
+        } else if ch == '-' || ch == '_' {
+            slug.push(ch);
+        } else if ch.is_whitespace() && !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+
+    slug.trim_matches('-').to_string()
+}
+
+/// Reserves `base`, appending `-1`, `-2`, ... when the slug is already in use.
+fn unique_slug(base: &str, taken: &mut HashSet<String>) -> String {
+    if taken.insert(base.to_string()) {
+        return base.to_string();
+    }
+
+    for suffix in 1.. {
+        let candidate = format!("{base}-{suffix}");
+        if taken.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+
+    unreachable!("suffix search is unbounded")
 }
 
 /// Handles a markdown file that may have been created or modified.
@@ -1096,5 +1292,159 @@ mod tests {
 
         assert_eq!(format_host("::1", 3000), "[::1]:3000");
         assert_eq!(format_host("2001:db8::1", 8080), "[2001:db8::1]:8080");
+    }
+
+    #[test]
+    fn test_heading_slug() {
+        assert_eq!(heading_slug("Timing"), "timing");
+        assert_eq!(heading_slug("Failed builds"), "failed-builds");
+        assert_eq!(
+            heading_slug("Queue contention: waits"),
+            "queue-contention-waits"
+        );
+        assert_eq!(heading_slug("*-agent-test jobs"), "agent-test-jobs");
+        assert_eq!(heading_slug("  spaced  out  "), "spaced-out");
+        assert_eq!(heading_slug("CET/CEST"), "cetcest");
+        assert_eq!(heading_slug("Køtid på node"), "køtid-på-node");
+        assert_eq!(heading_slug("!!!"), "");
+    }
+
+    #[test]
+    fn test_unique_slug_deduplicates() {
+        let mut taken = HashSet::new();
+
+        assert_eq!(unique_slug("summary", &mut taken), "summary");
+        assert_eq!(unique_slug("summary", &mut taken), "summary-1");
+        assert_eq!(unique_slug("summary", &mut taken), "summary-2");
+        assert_eq!(unique_slug("other", &mut taken), "other");
+    }
+
+    #[test]
+    fn test_unique_slug_skips_slug_taken_by_another_heading() {
+        let mut taken = HashSet::new();
+
+        assert_eq!(unique_slug("summary", &mut taken), "summary");
+        assert_eq!(unique_slug("summary-1", &mut taken), "summary-1");
+        assert_eq!(unique_slug("summary", &mut taken), "summary-2");
+    }
+
+    #[test]
+    fn test_strip_html_tags() {
+        assert_eq!(strip_html_tags("Plain"), "Plain");
+        assert_eq!(strip_html_tags("<code>step</code> timing"), "step timing");
+        assert_eq!(strip_html_tags("Nodes &amp; agents"), "Nodes & agents");
+        assert_eq!(strip_html_tags("a &lt;b&gt; c"), "a <b> c");
+    }
+
+    #[test]
+    fn test_existing_id() {
+        assert_eq!(existing_id("<h2>"), None);
+        assert_eq!(existing_id("<h2 class=\"x\">"), None);
+        assert_eq!(existing_id("<h2 data-id=\"x\">"), None);
+        assert_eq!(existing_id("<h2 id=\"kept\">"), Some("kept"));
+        assert_eq!(existing_id("<h2 class=\"x\" id='kept'>"), Some("kept"));
+        assert_eq!(existing_id("<h2 id=kept>"), Some("kept"));
+    }
+
+    #[test]
+    fn test_add_heading_anchors_adds_id_and_permalink() {
+        let html = add_heading_anchors("<h2>Failed builds</h2>");
+
+        assert_eq!(
+            html,
+            concat!(
+                "<h2 id=\"failed-builds\">Failed builds",
+                "<a class=\"heading-anchor\" href=\"#failed-builds\" ",
+                "aria-label=\"Link to this section\">\u{a7}</a></h2>"
+            )
+        );
+    }
+
+    #[test]
+    fn test_add_heading_anchors_covers_all_levels() {
+        for level in 1..=6 {
+            let html = add_heading_anchors(&format!("<h{level}>Scope</h{level}>"));
+
+            assert!(html.contains(&format!("<h{level} id=\"scope\">")), "{html}");
+            assert!(html.contains("href=\"#scope\""), "{html}");
+        }
+    }
+
+    #[test]
+    fn test_add_heading_anchors_keeps_surrounding_markup() {
+        let html = add_heading_anchors("<p>before</p>\n<h3>Mid</h3>\n<p>after</p>");
+
+        assert!(html.starts_with("<p>before</p>\n<h3 id=\"mid\">Mid"));
+        assert!(html.ends_with("</h3>\n<p>after</p>"));
+    }
+
+    #[test]
+    fn test_add_heading_anchors_uses_text_of_nested_markup() {
+        let html = add_heading_anchors("<h2><code>falcon-app</code> failures</h2>");
+
+        assert!(html.contains("<h2 id=\"falcon-app-failures\">"), "{html}");
+        assert!(
+            html.contains("<code>falcon-app</code> failures<a "),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn test_add_heading_anchors_preserves_other_attributes() {
+        let html = add_heading_anchors("<h2 class=\"x\">Scope</h2>");
+
+        assert!(
+            html.starts_with("<h2 id=\"scope\" class=\"x\">Scope"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn test_add_heading_anchors_links_to_existing_id() {
+        let html = add_heading_anchors("<h2 id=\"mine\">Scope</h2><h2>Mine</h2>");
+
+        assert!(html.starts_with("<h2 id=\"mine\">Scope<a "), "{html}");
+        assert!(html.contains("href=\"#mine\""), "{html}");
+        // The existing id is reserved, so the later heading is deduplicated.
+        assert!(html.contains("<h2 id=\"mine-1\">Mine"), "{html}");
+    }
+
+    #[test]
+    fn test_add_heading_anchors_ignores_empty_existing_id() {
+        let html = add_heading_anchors("<h2 id=\"\">Scope</h2>");
+
+        assert!(html.contains("<h2 id=\"scope\" id=\"\">Scope<a "), "{html}");
+    }
+
+    #[test]
+    fn test_add_heading_anchors_skips_text_without_slug() {
+        let html = add_heading_anchors("<h2>!!!</h2>");
+
+        assert_eq!(html, "<h2>!!!</h2>");
+    }
+
+    #[test]
+    fn test_add_heading_anchors_leaves_non_headings_alone() {
+        let html = "<p>an &lt;h2&gt; in text</p><hr />\n<html><head></head></html>";
+
+        assert_eq!(add_heading_anchors(html), html);
+    }
+
+    #[test]
+    fn test_markdown_to_html_anchors_headings() {
+        let html = MarkdownState::markdown_to_html("# Janitorial\n\n## Summary\n")
+            .expect("Failed to render markdown");
+
+        assert!(html.contains("<h1 id=\"janitorial\">"), "{html}");
+        assert!(html.contains("<h2 id=\"summary\">"), "{html}");
+        assert_eq!(html.matches('\u{a7}').count(), 2, "{html}");
+    }
+
+    #[test]
+    fn test_markdown_to_html_ignores_headings_in_code_blocks() {
+        let html = MarkdownState::markdown_to_html("```html\n<h2>Nope</h2>\n```\n")
+            .expect("Failed to render markdown");
+
+        assert!(!html.contains("heading-anchor"), "{html}");
     }
 }
