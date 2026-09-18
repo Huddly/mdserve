@@ -13,6 +13,16 @@ const TEST_FILE_3_CONTENT: &str = "# Test 3\n\nContent of test3";
 const YAML_FRONTMATTER_CONTENT: &str = "---\ntitle: Test Post\nauthor: Name\n---\n\n# Test Post\n";
 const TOML_FRONTMATTER_CONTENT: &str = "+++\ntitle = \"Test Post\"\n+++\n\n# Test Post\n";
 
+/// Renders the heading HTML mdserve serves: an `id` plus a `§` permalink,
+/// so `#anchor` URLs can be shared.
+fn anchored_heading(level: u8, id: &str, text: &str) -> String {
+    format!(
+        "<h{level} id=\"{id}\">{text}\
+         <a class=\"heading-anchor\" href=\"#{id}\" \
+         aria-label=\"Link to this section\">\u{a7}</a></h{level}>"
+    )
+}
+
 fn create_test_server_impl(content: &str, use_http: bool) -> (TestServer, NamedTempFile) {
     let temp_file = Builder::new()
         .suffix(".md")
@@ -102,7 +112,7 @@ async fn test_server_starts_and_serves_basic_markdown() {
     let body = response.text();
 
     // Check that markdown was converted to HTML
-    assert!(body.contains("<h1>Hello World</h1>"));
+    assert!(body.contains(&anchored_heading(1, "hello-world", "Hello World")));
     assert!(body.contains("<strong>bold</strong>"));
 
     // Check that theme toggle is present
@@ -112,6 +122,49 @@ async fn test_server_starts_and_serves_basic_markdown() {
     // Check CSS variables for theming
     assert!(body.contains("--bg-color"));
     assert!(body.contains("data-theme=\"dark\""));
+}
+
+#[tokio::test]
+async fn test_heading_anchors_are_served() {
+    let content = "# Report\n\n## Failed builds\n\ntext\n\n### Failed builds\n";
+    let (server, _temp_file) = create_test_server(content).await;
+
+    let response = server.get("/").await;
+
+    assert_eq!(response.status_code(), 200);
+    let body = response.text();
+
+    assert!(
+        body.contains(&anchored_heading(1, "report", "Report")),
+        "{body}"
+    );
+    assert!(
+        body.contains(&anchored_heading(2, "failed-builds", "Failed builds")),
+        "{body}"
+    );
+    // Repeated heading text still gets a unique anchor.
+    assert!(
+        body.contains(&anchored_heading(3, "failed-builds-1", "Failed builds")),
+        "{body}"
+    );
+    // The stylesheet that makes the permalinks readable ships with the page.
+    assert!(body.contains(".heading-anchor"), "{body}");
+}
+
+#[tokio::test]
+async fn test_heading_anchors_are_served_in_directory_mode() {
+    let (server, _temp_dir) = create_directory_server().await;
+
+    let response = server.get("/test1.md").await;
+
+    assert_eq!(response.status_code(), 200);
+    assert!(
+        response
+            .text()
+            .contains(&anchored_heading(1, "test-1", "Test 1")),
+        "{}",
+        response.text()
+    );
 }
 
 #[tokio::test]
@@ -514,21 +567,21 @@ async fn test_directory_mode_serves_multiple_files() {
     let response1 = server.get("/test1.md").await;
     assert_eq!(response1.status_code(), 200);
     let body1 = response1.text();
-    assert!(body1.contains("<h1>Test 1</h1>"));
+    assert!(body1.contains(&anchored_heading(1, "test-1", "Test 1")));
     assert!(body1.contains("Content of test1"));
 
     // Test accessing second file with .markdown extension
     let response2 = server.get("/test2.markdown").await;
     assert_eq!(response2.status_code(), 200);
     let body2 = response2.text();
-    assert!(body2.contains("<h1>Test 2</h1>"));
+    assert!(body2.contains(&anchored_heading(1, "test-2", "Test 2")));
     assert!(body2.contains("Content of test2"));
 
     // Test accessing third file
     let response3 = server.get("/test3.md").await;
     assert_eq!(response3.status_code(), 200);
     let body3 = response3.text();
-    assert!(body3.contains("<h1>Test 3</h1>"));
+    assert!(body3.contains(&anchored_heading(1, "test-3", "Test 3")));
     assert!(body3.contains("Content of test3"));
 }
 
@@ -649,7 +702,7 @@ async fn test_directory_mode_nested_file_via_query() {
     let response = server.get("/?file=subdir/nested.md").await;
     assert_eq!(response.status_code(), 200);
     let body = response.text();
-    assert!(body.contains("<h1>Nested</h1>"));
+    assert!(body.contains(&anchored_heading(1, "nested", "Nested")));
     assert!(body.contains("Nested content"));
 }
 
@@ -736,7 +789,7 @@ async fn test_directory_mode_new_file_triggers_reload() {
     let new_file_response = server.get("/test4.md").await;
     assert_eq!(new_file_response.status_code(), 200);
     let new_file_body = new_file_response.text();
-    assert!(new_file_body.contains("<h1>Test 4</h1>"));
+    assert!(new_file_body.contains(&anchored_heading(1, "test-4", "Test 4")));
     assert!(new_file_body.contains("This is a new file"));
 }
 
@@ -894,7 +947,7 @@ async fn test_yaml_frontmatter_is_stripped() {
     assert!(!body.contains("author: Name"));
 
     // Content should still be rendered
-    assert!(body.contains("<h1>Test Post</h1>"));
+    assert!(body.contains(&anchored_heading(1, "test-post", "Test Post")));
 }
 
 #[tokio::test]
@@ -910,7 +963,7 @@ async fn test_toml_frontmatter_is_stripped() {
     assert!(!body.contains("title = \"Test Post\""));
 
     // Content should still be rendered
-    assert!(body.contains("<h1>Test Post</h1>"));
+    assert!(body.contains(&anchored_heading(1, "test-post", "Test Post")));
 }
 
 #[tokio::test]
